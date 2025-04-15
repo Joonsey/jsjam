@@ -6,7 +6,7 @@ var WINDOW_HEIGHT: i32 = 720;
 const RENDER_WIDTH: i32 = 1080;
 const RENDER_HEIGHT: i32 = 720;
 
-const GRID_SIZE: usize = 25;
+const GRID_SIZE: usize = 45;
 const TOP_PADDING: usize = 40;
 
 const TILE_WIDTH: usize = 32;
@@ -20,9 +20,17 @@ const tile_type = enum(u8) {
     water = 10,
 };
 
+// what is on top of a tile
+const tile_occupation = enum(u8) {
+    generic_but_occupied = 0,
+    bush,
+    rock,
+};
+
 const Tile = struct {
     kind: tile_type = .tundra,
     y: f32 = 0,
+    occupation: ?tile_occupation = null,
 };
 
 const State = struct {
@@ -34,6 +42,66 @@ const State = struct {
             .tilemap = std.mem.zeroes([GRID_SIZE * GRID_SIZE]Tile),
             .scene = try rl.loadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT),
         };
+    }
+
+    pub fn get_tile_at(self: *State, x: i32, y: i32) ?*Tile {
+        if (x < 0 or x > GRID_SIZE) return null;
+        if (y < 0 or y > GRID_SIZE) return null;
+        const idx = @as(usize, @intCast(x)) + GRID_SIZE * @as(usize, @intCast(y));
+        if (idx >= GRID_SIZE * GRID_SIZE) return null;
+        return &self.tilemap[idx];
+    }
+
+    pub fn update(self: *State) !void {
+        for (&self.tilemap, 0..) |*tile, i| {
+            const x: i32 = @intCast(try std.math.mod(usize, i, GRID_SIZE));
+            const y: i32 = @intCast(try std.math.divFloor(usize, i, GRID_SIZE));
+
+            switch (tile.kind) {
+                .tundra => {
+                    // these are on purpose independent
+                    const uptick = std.crypto.random.float(f32) > 0.94;
+                    const crit = std.crypto.random.float(f32) > 0.98;
+                    if (self.get_tile_at(x, y + 1)) |above| {
+                        if (above.kind == .water and uptick) {
+                            tile.kind = .grass;
+                            if (crit) {
+                                tile.occupation = .bush;
+                            }
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x, y - 1)) |below| {
+                        if (below.kind == .water and uptick) {
+                            tile.kind = .grass;
+                            if (crit) {
+                                tile.occupation = .bush;
+                            }
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x - 1, y)) |left| {
+                        if (left.kind == .water and uptick) {
+                            tile.kind = .grass;
+                            if (crit) {
+                                tile.occupation = .bush;
+                            }
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x + 1, y)) |right| {
+                        if (right.kind == .water and uptick) {
+                            tile.kind = .grass;
+                            if (crit) {
+                                tile.occupation = .bush;
+                            }
+                            continue;
+                        }
+                    }
+                },
+                else => {},
+            }
+        }
     }
 
     pub fn draw_tiles(self: State, sheet: rl.Texture) !void {
@@ -50,6 +118,7 @@ const State = struct {
             screen_pos.y += TOP_PADDING;
 
             screen_pos.x -= @divTrunc(TILE_WIDTH, 2);
+            screen_pos.y += tile.y;
 
             var rand = std.Random.DefaultPrng.init(i);
             const r = try std.math.mod(u64, rand.next(), @intCast(sheet_rows));
@@ -58,13 +127,35 @@ const State = struct {
                 sheet,
                 .{
                     .x = @floatFromInt(TILE_WIDTH * r),
-                    .y = @as(f32, @floatFromInt(@intFromEnum(tile.kind))) * TILE_WIDTH + tile.y,
+                    .y = @as(f32, @floatFromInt(@intFromEnum(tile.kind))) * TILE_WIDTH,
                     .width = TILE_WIDTH,
                     .height = TILE_WIDTH,
                 },
                 screen_pos,
                 .white,
             );
+
+            if (tile.occupation) |occupation| {
+                switch (occupation) {
+                    .bush => {
+                        const source_r: usize = @intCast(sheet_rows - 3 + @as(i32, @intCast(@mod(rand.next(), 3))));
+                        screen_pos.y -= @divTrunc(TILE_HEIGHT, 2);
+                        rl.drawTextureRec(
+                            sheet,
+                            .{
+                                .x = @floatFromInt(TILE_WIDTH * source_r),
+                                .y = 3 * TILE_WIDTH,
+                                .width = TILE_WIDTH,
+                                .height = TILE_WIDTH,
+                            },
+                            screen_pos,
+                            .white,
+                        );
+                    },
+                    .generic_but_occupied => {},
+                    else => {},
+                }
+            }
         }
     }
 
@@ -85,6 +176,9 @@ pub fn main() anyerror!void {
 
     while (!rl.windowShouldClose()) {
         const mouse_position = get_mouse_screen_position();
+
+        try state.update();
+
         state.scene.begin();
         rl.clearBackground(.dark_gray);
         try state.draw_tiles(sheet);
@@ -101,18 +195,17 @@ pub fn main() anyerror!void {
             tile.y = 0;
         }
 
-        if (grid_pos.x > 0 and grid_pos.x < GRID_SIZE and grid_pos.y > 0 and grid_pos.y < GRID_SIZE) {
-            const int_y: usize = @intFromFloat(grid_pos.y);
-            const int_x: usize = @intFromFloat(grid_pos.x);
-            var tile = &state.tilemap[int_y * GRID_SIZE + int_x];
+        if (state.get_tile_at(@intFromFloat(grid_pos.x), @intFromFloat(grid_pos.y))) |tile| {
             if (rl.isKeyDown(.q)) {
                 tile.kind = .grass;
+                tile.occupation = null;
             }
             if (rl.isKeyDown(.e)) {
                 tile.kind = .water;
+                tile.occupation = null;
             }
 
-            tile.y = 4;
+            tile.y = -4;
         }
 
         state.scene.end();
