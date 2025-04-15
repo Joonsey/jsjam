@@ -17,6 +17,7 @@ const tile_type = enum(u8) {
     dirt,
     grass,
     rock,
+    water = 10,
 };
 
 const Tile = struct {
@@ -88,19 +89,6 @@ pub fn main() anyerror!void {
         rl.clearBackground(.dark_gray);
         try state.draw_tiles(sheet);
 
-        if (rl.isKeyPressed(.e) or rl.isKeyDown(.q)) {
-            const x = std.crypto.random.intRangeAtMost(u32, 0, GRID_SIZE);
-            const y = std.crypto.random.intRangeAtMost(u32, 0, GRID_SIZE);
-
-            if (x * y == GRID_SIZE * GRID_SIZE) {
-                var random_tile = &state.tilemap[x * y - 1];
-                random_tile.kind = .grass;
-            } else {
-                var random_tile = &state.tilemap[x * y];
-                random_tile.kind = .grass;
-            }
-        }
-
         var world_pos = mouse_position;
         const half_screen = try std.math.divFloor(f32, RENDER_WIDTH, 2);
         world_pos.x -= half_screen;
@@ -117,6 +105,12 @@ pub fn main() anyerror!void {
             const int_y: usize = @intFromFloat(grid_pos.y);
             const int_x: usize = @intFromFloat(grid_pos.x);
             var tile = &state.tilemap[int_y * GRID_SIZE + int_x];
+            if (rl.isKeyDown(.q)) {
+                tile.kind = .grass;
+            }
+            if (rl.isKeyDown(.e)) {
+                tile.kind = .water;
+            }
 
             tile.y = 4;
         }
