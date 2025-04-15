@@ -1,5 +1,7 @@
 const std = @import("std");
 const rl = @import("raylib");
+const tatl = @import("tatl.zig");
+const animator = @import("animator.zig");
 
 var WINDOW_WIDTH: i32 = 1080;
 var WINDOW_HEIGHT: i32 = 720;
@@ -7,14 +9,14 @@ const RENDER_WIDTH: i32 = 1080;
 const RENDER_HEIGHT: i32 = 720;
 
 const GRID_SIZE: usize = 45;
-const TOP_PADDING: usize = 40;
+const TOP_PADDING: usize = 0;
 
 const TILE_WIDTH: usize = 32;
 const TILE_HEIGHT: usize = 16;
 
 const tile_type = enum(u8) {
     tundra = 0,
-    dirt,
+    path,
     grass,
     rock,
     water = 10,
@@ -31,6 +33,40 @@ const Tile = struct {
     kind: tile_type = .tundra,
     y: f32 = 0,
     occupation: ?tile_occupation = null,
+};
+
+const Direction = enum {
+    SW,
+    NW,
+    SE,
+    NE,
+};
+
+const Stag = struct {
+    animator: *animator.Animator,
+    frame: usize = 0,
+    frame_time: u16 = 0,
+    direction: Direction,
+    animation_state: animator.AnimationState = .idle,
+
+    pub fn draw(self: Stag) void {
+        const frames = self.animator.get_frames(self.animation_state);
+        const tex_idx = self.animator.get_texture(@tagName(self.direction)).?;
+
+        const cel = frames[self.frame].texture_cels[tex_idx];
+        rl.drawTexture(cel.texture, 200 + cel.x, 200 + cel.y, .white);
+    }
+
+    pub fn update(self: *Stag, dt: u16) void {
+        const frames = self.animator.get_frames(self.animation_state);
+        const current_frame = frames[self.frame];
+        if (self.frame_time + dt > current_frame.duration) {
+            self.frame = (self.frame + 1) % (frames.len);
+            self.frame_time = 0;
+            return;
+        }
+        self.frame_time += dt;
+    }
 };
 
 const State = struct {
@@ -95,6 +131,34 @@ const State = struct {
                             if (crit) {
                                 tile.occupation = .bush;
                             }
+                            continue;
+                        }
+                    }
+                },
+                .path => {
+                    // these are on purpose independent
+                    const uptick = std.crypto.random.float(f32) > 0.96;
+                    if (self.get_tile_at(x, y + 1)) |above| {
+                        if (above.kind == .water and uptick) {
+                            tile.kind = .water;
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x, y - 1)) |below| {
+                        if (below.kind == .water and uptick) {
+                            tile.kind = .water;
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x - 1, y)) |left| {
+                        if (left.kind == .water and uptick) {
+                            tile.kind = .water;
+                            continue;
+                        }
+                    }
+                    if (self.get_tile_at(x + 1, y)) |right| {
+                        if (right.kind == .water and uptick) {
+                            tile.kind = .water;
                             continue;
                         }
                     }
@@ -165,12 +229,15 @@ const State = struct {
 pub fn main() anyerror!void {
     setup_window();
     defer rl.closeWindow();
-
-    const sheet = try rl.loadTexture("spritesheet.png");
-
-    rl.setTargetFPS(60);
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = gpa.allocator();
+
+    const sheet = try rl.loadTexture("spritesheet.png");
+    const file = try std.fs.cwd().openFile("critters/aseprite files/critter_stag.aseprite", .{});
+    var anim = try animator.Animator.load(try tatl.import(allocator, file.reader()), allocator);
+    var stag: Stag = .{ .animator = &anim, .direction = .NE };
+
+    rl.setTargetFPS(60);
     var state = try State.init(allocator);
     defer state.deinit(allocator);
 
@@ -197,7 +264,7 @@ pub fn main() anyerror!void {
 
         if (state.get_tile_at(@intFromFloat(grid_pos.x), @intFromFloat(grid_pos.y))) |tile| {
             if (rl.isKeyDown(.q)) {
-                tile.kind = .grass;
+                tile.kind = .path;
                 tile.occupation = null;
             }
             if (rl.isKeyDown(.e)) {
@@ -207,6 +274,10 @@ pub fn main() anyerror!void {
 
             tile.y = -4;
         }
+
+        stag.animation_state = .idle;
+        stag.update(8);
+        stag.draw();
 
         state.scene.end();
 
