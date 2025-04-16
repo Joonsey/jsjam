@@ -42,12 +42,18 @@ const Direction = enum {
     NE,
 };
 
+pub const StagAnimationStates = enum {
+    walk,
+    run,
+    idle,
+};
+
 const Stag = struct {
-    animator: *animator.Animator,
+    animator: *animator.Animator(StagAnimationStates),
     frame: usize = 0,
     frame_time: u16 = 0,
     direction: Direction,
-    animation_state: animator.AnimationState = .idle,
+    animation_state: StagAnimationStates = .idle,
 
     pub fn draw(self: Stag) void {
         const frames = self.animator.get_frames(self.animation_state);
@@ -234,7 +240,7 @@ pub fn main() anyerror!void {
 
     const sheet = try rl.loadTexture("spritesheet.png");
     const file = try std.fs.cwd().openFile("critters/aseprite files/critter_stag.aseprite", .{});
-    var anim = try animator.Animator.load(try tatl.import(allocator, file.reader()), allocator);
+    var anim = try animator.Animator(StagAnimationStates).load(try tatl.import(allocator, file.reader()), allocator);
     var stag: Stag = .{ .animator = &anim, .direction = .NE };
 
     rl.setTargetFPS(60);
