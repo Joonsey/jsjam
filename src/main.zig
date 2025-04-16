@@ -76,7 +76,7 @@ const Stag = struct {
     animator: *animator.Animator(StagAnimationStates),
     frame: usize = 0,
     frame_time: u16 = 0,
-    direction: Direction,
+    direction: Direction = .NE,
     animation_state: StagAnimationStates = .idle,
     position: rl.Vector2,
     path: ?path.Path = null,
@@ -142,10 +142,9 @@ const Stag = struct {
                 self.move_to_do_at_target(dt, move_to_graze_at_target);
             },
             .grazing => {
-                std.debug.assert(self.animation_state == .idle);
                 // right after first loop is completed
+                std.debug.assert(self.animation_state == .idle);
                 if (self.frame == 0 and self.frame_time == 0) {
-                    std.log.debug("looking for grazing spot ", .{});
                     for (0..5) |_| {
                         const x = std.crypto.random.intRangeAtMost(i32, -3, 3);
                         const y = std.crypto.random.intRangeAtMost(i32, -3, 3);
@@ -171,6 +170,7 @@ const State = struct {
     scene: rl.RenderTexture,
     collisions: [][]bool = undefined,
     allocator: std.mem.Allocator,
+    stags: std.ArrayListUnmanaged(Stag),
 
     pub fn init(allocator: std.mem.Allocator) !State {
         const collisions = try allocator.alloc([]bool, GRID_SIZE);
@@ -183,6 +183,7 @@ const State = struct {
             .scene = try rl.loadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT),
             .collisions = collisions,
             .allocator = allocator,
+            .stags = .{},
         };
     }
 
@@ -194,7 +195,7 @@ const State = struct {
         return &self.tilemap[idx];
     }
 
-    pub fn update(self: *State) !void {
+    pub fn update(self: *State, dt: u16) !void {
         for (&self.tilemap, 0..) |*tile, i| {
             const x: i32 = @intCast(try std.math.mod(usize, i, GRID_SIZE));
             const y: i32 = @intCast(try std.math.divFloor(usize, i, GRID_SIZE));
@@ -278,6 +279,10 @@ const State = struct {
             const y: usize = try std.math.divFloor(usize, i, GRID_SIZE);
             self.collisions[y][x] = tile.occupied();
         }
+
+        for (self.stags.items) |*stag| {
+            stag.update(dt, self);
+        }
     }
 
     pub fn draw_tiles(self: State, sheet: rl.Texture) !void {
@@ -337,22 +342,35 @@ const State = struct {
 pub fn main() anyerror!void {
     setup_window();
     defer rl.closeWindow();
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+    const flip = @import("builtin").target.os.tag != .emscripten;
+    var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{}) else struct {} = .{};
+    const allocator: std.mem.Allocator = if (flip) gpa.allocator() else std.heap.page_allocator;
 
-    const sheet = try rl.loadTexture("spritesheet.png");
-    const file = try std.fs.cwd().openFile("critters/aseprite files/critter_stag.aseprite", .{});
+    const sheet = try rl.loadTexture("resources/spritesheet.png");
+    const file = try std.fs.cwd().openFile("resources/critters/aseprite files/critter_stag.aseprite", .{});
     var anim = try animator.Animator(StagAnimationStates).load(try tatl.import(allocator, file.reader()), allocator);
-    var stag: Stag = .{ .animator = &anim, .direction = .NE, .position = rl.Vector2.zero() };
 
     rl.setTargetFPS(60);
     var state = try State.init(allocator);
     defer state.deinit(allocator);
 
+    try state.stags.append(allocator, .{ .animator = &anim, .position = rl.Vector2.zero() });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 20, .y = 13 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 30, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 2, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 6, .y = 1 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 32 } });
+
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 13 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 33, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 4, .y = 25 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 8, .y = 3 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 24, .y = 32 } });
+
     while (!rl.windowShouldClose()) {
         const mouse_position = get_mouse_screen_position();
 
-        try state.update();
+        try state.update(8);
 
         state.scene.begin();
         rl.clearBackground(.dark_gray);
@@ -383,8 +401,9 @@ pub fn main() anyerror!void {
             tile.y = -4;
         }
 
-        stag.update(8, &state);
-        stag.draw();
+        for (state.stags.items) |stag| {
+            stag.draw();
+        }
 
         state.scene.end();
 
