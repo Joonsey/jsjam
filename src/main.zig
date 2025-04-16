@@ -2,6 +2,7 @@ const std = @import("std");
 const rl = @import("raylib");
 const tatl = @import("tatl.zig");
 const animator = @import("animator.zig");
+const path = @import("path.zig");
 
 var WINDOW_WIDTH: i32 = 1080;
 var WINDOW_HEIGHT: i32 = 720;
@@ -33,6 +34,10 @@ const Tile = struct {
     kind: tile_type = .tundra,
     y: f32 = 0,
     occupation: ?tile_occupation = null,
+
+    pub fn occupied(tile: Tile) bool {
+        return tile.kind == .water or tile.occupation != null;
+    }
 };
 
 const Direction = enum {
@@ -40,12 +45,31 @@ const Direction = enum {
     NW,
     SE,
     NE,
+
+    fn from_direction(dx: f32, dy: f32) Direction {
+        if (dx > 0) {
+            return .SE;
+        } else if (dx < 0) {
+            return .NW;
+        } else if (dy < 0) {
+            return .NE;
+        } else {
+            return .SW;
+        }
+    }
 };
 
-pub const StagAnimationStates = enum {
+const StagAnimationStates = enum {
     walk,
     run,
     idle,
+};
+
+const StagAgentState = enum {
+    migrating_leading,
+    migrating_following,
+    grazing,
+    moving_to_graze,
 };
 
 const Stag = struct {
@@ -54,35 +78,111 @@ const Stag = struct {
     frame_time: u16 = 0,
     direction: Direction,
     animation_state: StagAnimationStates = .idle,
+    position: rl.Vector2,
+    path: ?path.Path = null,
+    path_step: u16 = 0,
+    agent_state: StagAgentState = .grazing,
+
+    pub fn set_animation(self: *Stag, state: StagAnimationStates) void {
+        self.animation_state = state;
+        self.frame = 0;
+        self.frame_time = 0;
+    }
 
     pub fn draw(self: Stag) void {
         const frames = self.animator.get_frames(self.animation_state);
         const tex_idx = self.animator.get_texture(@tagName(self.direction)).?;
 
         const cel = frames[self.frame].texture_cels[tex_idx];
-        rl.drawTexture(cel.texture, 200 + cel.x, 200 + cel.y, .white);
+        const screen_pos = project_to_screen(self.position.x, self.position.y);
+        rl.drawTexture(cel.texture, @as(i32, @intFromFloat(screen_pos.x - @divTrunc(self.animator.canvas_size.x, 2))) + cel.x, @as(i32, @intFromFloat(screen_pos.y - @divTrunc(self.animator.canvas_size.y, 2))) + cel.y, .white);
     }
 
-    pub fn update(self: *Stag, dt: u16) void {
+    fn move_to_do_at_target(self: *Stag, dt: u16, cb: fn (*Stag) void) void {
+        if (self.path) |route| {
+            if (self.path_step < route.path.len) {
+                const target = route.path[self.path_step];
+
+                if (self.position.distance(target) < 0.1) {
+                    self.position = target;
+                    self.path_step += 1;
+                } else {
+                    const dx = target.x - self.position.x;
+                    const dy = target.y - self.position.y;
+                    self.direction = Direction.from_direction(dx, dy);
+                }
+
+                self.position = self.position.moveTowards(target, 4 * @as(f32, @floatFromInt(dt)) / 1000);
+            } else {
+                cb(self);
+            }
+        }
+    }
+
+    fn move_to_graze_at_target(self: *Stag) void {
+        self.path = null;
+        self.set_animation(.idle);
+        self.agent_state = .grazing;
+    }
+
+    pub fn update(self: *Stag, dt: u16, state: *State) void {
         const frames = self.animator.get_frames(self.animation_state);
         const current_frame = frames[self.frame];
         if (self.frame_time + dt > current_frame.duration) {
             self.frame = (self.frame + 1) % (frames.len);
             self.frame_time = 0;
-            return;
+        } else {
+            self.frame_time += dt;
         }
-        self.frame_time += dt;
+
+        switch (self.agent_state) {
+            .migrating_leading => {},
+            .migrating_following => {},
+            .moving_to_graze => {
+                self.move_to_do_at_target(dt, move_to_graze_at_target);
+            },
+            .grazing => {
+                std.debug.assert(self.animation_state == .idle);
+                // right after first loop is completed
+                if (self.frame == 0 and self.frame_time == 0) {
+                    std.log.debug("looking for grazing spot ", .{});
+                    for (0..5) |_| {
+                        const x = std.crypto.random.intRangeAtMost(i32, -3, 3);
+                        const y = std.crypto.random.intRangeAtMost(i32, -3, 3);
+
+                        const random_pos: rl.Vector2 = .{ .x = self.position.x + @as(f32, @floatFromInt(x)), .y = self.position.y + @as(f32, @floatFromInt(y)) };
+                        if (state.get_tile_at(@intFromFloat(random_pos.x), @intFromFloat(random_pos.y))) |tile| {
+                            if (tile.occupied()) continue;
+                            self.path = path.Path.find(state.allocator, state.collisions, self.position, random_pos) catch null;
+                            self.path_step = 0;
+                            self.set_animation(.walk);
+                            self.agent_state = .moving_to_graze;
+                            return;
+                        }
+                    }
+                }
+            },
+        }
     }
 };
 
 const State = struct {
     tilemap: [GRID_SIZE * GRID_SIZE]Tile,
     scene: rl.RenderTexture,
+    collisions: [][]bool = undefined,
+    allocator: std.mem.Allocator,
 
-    pub fn init(_: std.mem.Allocator) !State {
+    pub fn init(allocator: std.mem.Allocator) !State {
+        const collisions = try allocator.alloc([]bool, GRID_SIZE);
+        for (collisions) |*row| {
+            row.* = try allocator.alloc(bool, GRID_SIZE);
+            @memset(row.*, false); // Initialize to false
+        }
         return .{
             .tilemap = std.mem.zeroes([GRID_SIZE * GRID_SIZE]Tile),
             .scene = try rl.loadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT),
+            .collisions = collisions,
+            .allocator = allocator,
         };
     }
 
@@ -172,6 +272,12 @@ const State = struct {
                 else => {},
             }
         }
+
+        for (self.tilemap, 0..) |tile, i| {
+            const x: usize = try std.math.mod(usize, i, GRID_SIZE);
+            const y: usize = try std.math.divFloor(usize, i, GRID_SIZE);
+            self.collisions[y][x] = tile.occupied();
+        }
     }
 
     pub fn draw_tiles(self: State, sheet: rl.Texture) !void {
@@ -181,11 +287,7 @@ const State = struct {
             const x: i32 = @intCast(try std.math.mod(usize, i, GRID_SIZE));
             const y: i32 = @intCast(try std.math.divFloor(usize, i, GRID_SIZE));
 
-            var screen_pos = try project_to_screen(x, y);
-
-            const half_screen = try std.math.divFloor(f32, RENDER_WIDTH, 2);
-            screen_pos.x += half_screen;
-            screen_pos.y += TOP_PADDING;
+            var screen_pos = project_to_screen(@floatFromInt(x), @floatFromInt(y));
 
             screen_pos.x -= @divTrunc(TILE_WIDTH, 2);
             screen_pos.y += tile.y;
@@ -241,7 +343,7 @@ pub fn main() anyerror!void {
     const sheet = try rl.loadTexture("spritesheet.png");
     const file = try std.fs.cwd().openFile("critters/aseprite files/critter_stag.aseprite", .{});
     var anim = try animator.Animator(StagAnimationStates).load(try tatl.import(allocator, file.reader()), allocator);
-    var stag: Stag = .{ .animator = &anim, .direction = .NE };
+    var stag: Stag = .{ .animator = &anim, .direction = .NE, .position = rl.Vector2.zero() };
 
     rl.setTargetFPS(60);
     var state = try State.init(allocator);
@@ -281,8 +383,7 @@ pub fn main() anyerror!void {
             tile.y = -4;
         }
 
-        stag.animation_state = .idle;
-        stag.update(8);
+        stag.update(8, &state);
         stag.draw();
 
         state.scene.end();
@@ -327,12 +428,17 @@ fn draw_final_scene(scene: rl.RenderTexture) void {
     rl.endDrawing();
 }
 
-fn project_to_screen(x: i32, y: i32) !rl.Vector2 {
+fn project_to_screen(x: f32, y: f32) rl.Vector2 {
     // This makes the grid skewed and look more "angled"
-    return rl.Vector2{
-        .x = @floatFromInt((x - y) * (try std.math.divFloor(i32, TILE_WIDTH, 2))),
-        .y = @floatFromInt((x + y) * (try std.math.divFloor(i32, TILE_HEIGHT, 2))),
+    const half_screen: f32 = @floatFromInt(@divFloor(RENDER_WIDTH, 2));
+    var screen_pos: rl.Vector2 = .{
+        .x = ((x - y) * (@divFloor(TILE_WIDTH, 2))),
+        .y = ((x + y) * (@divFloor(TILE_HEIGHT, 2))),
     };
+
+    screen_pos.x += half_screen;
+    screen_pos.y += TOP_PADDING;
+    return screen_pos;
 }
 
 fn screen_to_grid(screen_pos: rl.Vector2) !rl.Vector2 {
