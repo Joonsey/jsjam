@@ -67,7 +67,8 @@ pub fn Animator(comptime T: type) type {
 
             for (0..aseprite.layers.len) |i| {
                 const layer = aseprite.layers[i];
-                try texture_map.put(layer.name, i);
+                const new_layer = try allocator.dupe(u8, layer.name);
+                try texture_map.put(new_layer, i);
             }
 
             var map = std.AutoHashMap(T, FrameSlice).init(allocator);

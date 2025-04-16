@@ -176,10 +176,20 @@ const State = struct {
         const collisions = try allocator.alloc([]bool, GRID_SIZE);
         for (collisions) |*row| {
             row.* = try allocator.alloc(bool, GRID_SIZE);
-            @memset(row.*, false); // Initialize to false
+            // this is cancer but must be done for wasm support
+            for (row.*) |*cell| {
+                cell.* = false;
+            }
         }
+
+        var tilemap: [GRID_SIZE * GRID_SIZE]Tile = undefined;
+        for (0..tilemap.len) |i| {
+            // this is cancer but must be done for wasm support
+            tilemap[i] = Tile{ .kind = .tundra, .occupation = null, .y = 0 };
+        }
+
         return .{
-            .tilemap = std.mem.zeroes([GRID_SIZE * GRID_SIZE]Tile),
+            .tilemap = tilemap,
             .scene = try rl.loadRenderTexture(RENDER_WIDTH, RENDER_HEIGHT),
             .collisions = collisions,
             .allocator = allocator,
@@ -340,19 +350,23 @@ const State = struct {
 };
 
 pub fn main() anyerror!void {
-    setup_window();
-    defer rl.closeWindow();
     const flip = @import("builtin").target.os.tag != .emscripten;
-    var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{}) else struct {} = .{};
-    const allocator: std.mem.Allocator = if (flip) gpa.allocator() else std.heap.page_allocator;
+    var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }) else struct {} = .{};
+    if (flip) gpa.requested_memory_limit = 1_000_000;
+    const allocator: std.mem.Allocator = if (flip) gpa.allocator() else std.heap.c_allocator;
+    if (flip) setup_window() else rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "please work");
+    defer rl.closeWindow();
 
     const sheet = try rl.loadTexture("resources/spritesheet.png");
     const file = try std.fs.cwd().openFile("resources/critters/aseprite files/critter_stag.aseprite", .{});
-    var anim = try animator.Animator(StagAnimationStates).load(try tatl.import(allocator, file.reader()), allocator);
+    const ase = tatl.import(allocator, file.reader()) catch @panic("failed parsing aseprite file");
+    var anim = try animator.Animator(StagAnimationStates).load(ase, allocator);
 
     rl.setTargetFPS(60);
     var state = try State.init(allocator);
     defer state.deinit(allocator);
+    file.close();
+    ase.free(allocator);
 
     try state.stags.append(allocator, .{ .animator = &anim, .position = rl.Vector2.zero() });
     try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 20, .y = 13 } });
