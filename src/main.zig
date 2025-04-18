@@ -478,23 +478,6 @@ fn screen_to_grid(screen_pos: rl.Vector2) !rl.Vector2 {
     };
 }
 
-// TODO refactor
-fn pop_radius(self: *State, radius: usize, ix: i32, iy: i32) void {
-    for (0..radius * 2 + 1) |double_x| {
-        for (0..radius * 2 + 1) |double_y| {
-            const x: i32 = @as(i32, @intCast(double_x)) - @as(i32, @intCast(radius));
-            const y: i32 = @as(i32, @intCast(double_y)) - @as(i32, @intCast(radius));
-            if (@max(@abs(x), @abs(y)) == radius) {
-                const i: i32 = x + ix;
-                const j: i32 = y + iy;
-                if (self.get_tile_at(i, j)) |tile_found| {
-                    tile_found.y = -5 * @as(f32, @floatFromInt(radius));
-                }
-            }
-        }
-    }
-}
-
 pub fn main() anyerror!void {
     const flip = @import("builtin").target.os.tag != .emscripten;
     var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }) else struct {} = .{};
