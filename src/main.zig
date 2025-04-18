@@ -96,7 +96,6 @@ const Stag = struct {
         const cel = frames[self.frame].texture_cels[tex_idx];
         const screen_pos = project_to_screen(self.position.x, self.position.y);
         rl.drawTexture(cel.texture, @as(i32, @intFromFloat(screen_pos.x - @divTrunc(self.animator.canvas_size.x, 2))) + cel.x, @as(i32, @intFromFloat(screen_pos.y - @divTrunc(self.animator.canvas_size.y, 2))) + cel.y, .white);
-        //
         //rl.drawText(@tagName(self.agent_state), @intFromFloat(screen_pos.x), @intFromFloat(screen_pos.y), 12, .white);
     }
 
@@ -588,8 +587,8 @@ pub fn main() anyerror!void {
 
         // ignoring temporary render display on wasm because it is broken
         if (flip) {
-            draw_final_scene(state.scene);
             state.scene.end();
+            draw_final_scene(state.scene);
         } else rl.endDrawing();
     }
 }
