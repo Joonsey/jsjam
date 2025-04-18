@@ -4,39 +4,65 @@ on:
   push:
     branches: [master]
 
+env:
+  EM_CACHE_FOLDER: 'emsdk_cache'  # Custom cache directory name
+  ZIG_VERSION: '0.14.0'           # Explicit Zig version
+
 jobs:
   build-deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Install Zig 0.14.0
       - name: Install Zig
         uses: goto-bus-stop/setup-zig@v2
         with:
-          version: 0.14.0
+          version: ${{ env.ZIG_VERSION }}
 
-      # Install latest Emscripten
-      - name: Install Emscripten
-        uses: mymindstorm/setup-emsdk@v2
+      - name: Cache Emscripten
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.EM_CACHE_FOLDER }}
+          key: emsdk-${{ runner.os }}-latest
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v14
         with:
           version: latest
+          actions-cache-folder: ${{ env.EM_CACHE_FOLDER }}
+          update: true  # Refresh package info for 'latest'
 
-      # Build your project
-      - name: Build
+      - name: Install system dependencies
         run: |
-          source $HOME/emsdk/emsdk_env.sh
-          zig build -Dtarget=wasm32-emscripten --sysroot $HOME/emsdk/upstream/emscripten -Doptimize=Debug
+          sudo apt-get update
+          sudo apt-get install -y \
+            wayland-protocols \
+            libwayland-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxrandr-dev \
+            libxinerama-dev \
+            libxi-dev \
+            mesa-common-dev \
+            cmake \
+            ninja-build
 
-      # Prepare deployment files
+      - name: Build Game
+        run: |
+          # Use environment variables set by setup-emsdk
+          echo "Using Emscripten from: $EMSDK"
+          zig build -Dtarget=wasm32-emscripten \
+            --sysroot "$EMSDK/upstream/emscripten" \
+
       - name: Prepare Deployment
         run: |
           mkdir -p public
           cp -r zig-out/htmlout/* public/
+          # Ensure main HTML is named index.html
+          [ -f public/index.html ] || mv public/*.html public/index.html
 
-      # Deploy to GitHub Pages
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./public
