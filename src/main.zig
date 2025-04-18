@@ -352,7 +352,21 @@ const State = struct {
         }
     }
 
-    pub fn draw_tiles(self: State, sheet: rl.Texture) !void {
+    fn draw_tile(sheet: rl.Texture, kind: tile_type, source_x: f32, screen_pos: rl.Vector2) void {
+        rl.drawTextureRec(
+            sheet,
+            .{
+                .x = source_x,
+                .y = @as(f32, @floatFromInt(@intFromEnum(kind))) * TILE_WIDTH,
+                .width = TILE_WIDTH,
+                .height = TILE_WIDTH,
+            },
+            screen_pos,
+            .white,
+        );
+    }
+
+    pub fn draw_tiles(self: *State, sheet: rl.Texture) !void {
         const sheet_rows = try std.math.divFloor(i32, sheet.width, TILE_WIDTH);
 
         for (self.tilemap, 0..) |tile, i| {
@@ -367,17 +381,25 @@ const State = struct {
             var rand = std.Random.DefaultPrng.init(i);
             const r = try std.math.mod(u64, rand.next(), @intCast(sheet_rows));
 
-            rl.drawTextureRec(
-                sheet,
-                .{
-                    .x = @floatFromInt(TILE_WIDTH * r),
-                    .y = @as(f32, @floatFromInt(@intFromEnum(tile.kind))) * TILE_WIDTH,
-                    .width = TILE_WIDTH,
-                    .height = TILE_WIDTH,
+            switch (tile.kind) {
+                .tundra, .path, .grass, .rock => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
+                .water => {
+                    const above_tile = self.get_tile_at(x, y + 1);
+                    const below_tile = self.get_tile_at(x, y - 1);
+                    const left_tile = self.get_tile_at(x + 1, y);
+                    const right_tile = self.get_tile_at(x - 1, y);
+
+                    const above = (above_tile != null and above_tile.?.kind != .water);
+                    const below = (below_tile != null and below_tile.?.kind != .water);
+                    const left = (left_tile != null and left_tile.?.kind != .water);
+                    const right = (right_tile != null and right_tile.?.kind != .water);
+
+                    // YEAH THIS IS CURSED
+                    // might drops this entirely
+                    if (above and below and left and right) draw_tile(sheet, tile.kind, 9 * TILE_WIDTH, screen_pos) else if (!above and below and left and !right) draw_tile(sheet, tile.kind, 8 * TILE_WIDTH, screen_pos) else if (above and !below and !left and right) draw_tile(sheet, tile.kind, 7 * TILE_WIDTH, screen_pos) else if (above and !below and left and !right) draw_tile(sheet, tile.kind, 6 * TILE_WIDTH, screen_pos) else if (!above and below and !left and right) draw_tile(sheet, tile.kind, 5 * TILE_WIDTH, screen_pos) else if (above and !below and !left and !right) draw_tile(sheet, tile.kind, 4 * TILE_WIDTH, screen_pos) else if (!above and !below and left and !right) draw_tile(sheet, tile.kind, 3 * TILE_WIDTH, screen_pos) else if (!above and !below and !left and right) draw_tile(sheet, tile.kind, 2 * TILE_WIDTH, screen_pos) else if (!above and below and !left and !right) draw_tile(sheet, tile.kind, 1 * TILE_WIDTH, screen_pos) else draw_tile(sheet, tile.kind, 0 * TILE_WIDTH, screen_pos);
+                    // BTW this is for 'autotiling'
                 },
-                screen_pos,
-                .white,
-            );
+            }
 
             if (tile.occupation) |occupation| {
                 switch (occupation) {
