@@ -504,11 +504,6 @@ pub fn main() anyerror!void {
     if (flip) setup_window() else rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "please work");
     defer rl.closeWindow();
 
-    const zlib = std.compress.zlib;
-    const t = try std.fs.cwd().openFile("resources/test", .{});
-    const zlib_stream = zlib.decompressor(t.reader());
-    _ = zlib_stream;
-
     const sheet = try rl.loadTexture("resources/spritesheet.png");
     const file = try std.fs.cwd().openFile("resources/critters/aseprite files/critter_stag.aseprite", .{});
     const ase = tatl.import(allocator, file.reader()) catch @panic("failed parsing aseprite file");
