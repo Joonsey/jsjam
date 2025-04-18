@@ -214,8 +214,6 @@ pub const ImageCel = struct {
         errdefer allocator.free(result.pixels);
 
         if (compressed) {
-            // TODO figure this out
-            if (@import("builtin").target.os.tag == .emscripten) return result;
             var zlib_stream = zlib.decompressor(reader);
             _ = try zlib_stream.reader().readAll(result.pixels);
         } else {

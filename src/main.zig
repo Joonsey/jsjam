@@ -96,6 +96,8 @@ const Stag = struct {
         const cel = frames[self.frame].texture_cels[tex_idx];
         const screen_pos = project_to_screen(self.position.x, self.position.y);
         rl.drawTexture(cel.texture, @as(i32, @intFromFloat(screen_pos.x - @divTrunc(self.animator.canvas_size.x, 2))) + cel.x, @as(i32, @intFromFloat(screen_pos.y - @divTrunc(self.animator.canvas_size.y, 2))) + cel.y, .white);
+        //
+        //rl.drawText(@tagName(self.agent_state), @intFromFloat(screen_pos.x), @intFromFloat(screen_pos.y), 12, .white);
     }
 
     fn move_to_do_at_target(self: *Stag, dt: u16, cb: fn (*Stag) void) void {
@@ -165,12 +167,51 @@ const Stag = struct {
     }
 };
 
+const Ripple = struct {
+    x: i32,
+    y: i32,
+    radius: usize,
+
+    interval_frames: i32,
+    frame_count: usize = 0,
+    current_wave: usize = 1,
+    strength: f32 = 9,
+
+    on_tile_fn: *const fn (*Ripple, *Tile) void = offset_tile,
+
+    pub fn update(self: *Ripple, state: *State) void {
+        self.frame_count += 1;
+        if (self.frame_count >= self.interval_frames) {
+            self.ripple(state);
+            self.current_wave += 1;
+            self.frame_count = 0;
+        }
+    }
+
+    pub fn offset_tile_and_change_tile_to_water(self: *Ripple, tile: *Tile) void {
+        tile.y = self.strength;
+        tile.kind = .water;
+    }
+
+    pub fn offset_tile(self: *Ripple, tile: *Tile) void {
+        tile.y = self.strength;
+    }
+
+    fn ripple(self: *Ripple, state: *State) void {
+        const radius: usize = self.current_wave;
+        const ix: i32 = self.x;
+        const iy: i32 = self.y;
+        state.do_for_tile_at_radius(radius, ix, iy, *Ripple, self, self.on_tile_fn);
+    }
+};
+
 const State = struct {
     tilemap: [GRID_SIZE * GRID_SIZE]Tile,
     scene: rl.RenderTexture,
     collisions: [][]bool = undefined,
     allocator: std.mem.Allocator,
     stags: std.ArrayListUnmanaged(Stag),
+    ripples: std.ArrayListUnmanaged(Ripple),
 
     pub fn init(allocator: std.mem.Allocator) !State {
         const collisions = try allocator.alloc([]bool, GRID_SIZE);
@@ -194,7 +235,24 @@ const State = struct {
             .collisions = collisions,
             .allocator = allocator,
             .stags = .{},
+            .ripples = .{},
         };
+    }
+
+    pub fn do_for_tile_at_radius(self: *State, radius: usize, ix: i32, iy: i32, T: type, instance: T, callback: *const fn (T, *Tile) void) void {
+        for (0..radius * 2 + 1) |double_x| {
+            for (0..radius * 2 + 1) |double_y| {
+                const x: i32 = @as(i32, @intCast(double_x)) - @as(i32, @intCast(radius));
+                const y: i32 = @as(i32, @intCast(double_y)) - @as(i32, @intCast(radius));
+                if (@max(@abs(x), @abs(y)) == radius) {
+                    const i: i32 = x + ix;
+                    const j: i32 = y + iy;
+                    if (self.get_tile_at(i, j)) |tile_found| {
+                        callback(instance, tile_found);
+                    }
+                }
+            }
+        }
     }
 
     pub fn get_tile_at(self: *State, x: i32, y: i32) ?*Tile {
@@ -349,82 +407,6 @@ const State = struct {
     pub fn deinit(_: State, _: std.mem.Allocator) void {}
 };
 
-pub fn main() anyerror!void {
-    const flip = @import("builtin").target.os.tag != .emscripten;
-    var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }) else struct {} = .{};
-    if (flip) gpa.requested_memory_limit = 1_000_000;
-    const allocator: std.mem.Allocator = if (flip) gpa.allocator() else std.heap.c_allocator;
-    if (flip) setup_window() else rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "please work");
-    defer rl.closeWindow();
-
-    const sheet = try rl.loadTexture("resources/spritesheet.png");
-    const file = try std.fs.cwd().openFile("resources/critters/aseprite files/critter_stag.aseprite", .{});
-    const ase = tatl.import(allocator, file.reader()) catch @panic("failed parsing aseprite file");
-    var anim = try animator.Animator(StagAnimationStates).load(ase, allocator);
-
-    rl.setTargetFPS(60);
-    var state = try State.init(allocator);
-    defer state.deinit(allocator);
-    file.close();
-    ase.free(allocator);
-
-    try state.stags.append(allocator, .{ .animator = &anim, .position = rl.Vector2.zero() });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 20, .y = 13 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 30, .y = 23 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 2, .y = 23 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 6, .y = 1 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 32 } });
-
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 13 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 33, .y = 23 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 4, .y = 25 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 8, .y = 3 } });
-    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 24, .y = 32 } });
-
-    while (!rl.windowShouldClose()) {
-        const mouse_position = get_mouse_screen_position();
-
-        try state.update(8);
-
-        state.scene.begin();
-        rl.clearBackground(.dark_gray);
-        try state.draw_tiles(sheet);
-
-        var world_pos = mouse_position;
-        const half_screen = try std.math.divFloor(f32, RENDER_WIDTH, 2);
-        world_pos.x -= half_screen;
-        world_pos.y -= TOP_PADDING;
-
-        const grid_pos = try screen_to_grid(world_pos);
-
-        // temporary
-        for (&state.tilemap) |*tile| {
-            tile.y = 0;
-        }
-
-        if (state.get_tile_at(@intFromFloat(grid_pos.x), @intFromFloat(grid_pos.y))) |tile| {
-            if (rl.isKeyDown(.q)) {
-                tile.kind = .path;
-                tile.occupation = null;
-            }
-            if (rl.isKeyDown(.e)) {
-                tile.kind = .water;
-                tile.occupation = null;
-            }
-
-            tile.y = -4;
-        }
-
-        for (state.stags.items) |stag| {
-            stag.draw();
-        }
-
-        state.scene.end();
-
-        draw_final_scene(state.scene);
-    }
-}
-
 /// updates the global WINDOW_WIDTH and WINDOW_HEIGHT variables
 fn setup_window() void {
     rl.setConfigFlags(.{ .window_resizable = true });
@@ -495,4 +477,124 @@ fn screen_to_grid(screen_pos: rl.Vector2) !rl.Vector2 {
         .x = screen_pos.x * inv_a + screen_pos.y * inv_b,
         .y = screen_pos.x * inv_c + screen_pos.y * inv_d,
     };
+}
+
+// TODO refactor
+fn pop_radius(self: *State, radius: usize, ix: i32, iy: i32) void {
+    for (0..radius * 2 + 1) |double_x| {
+        for (0..radius * 2 + 1) |double_y| {
+            const x: i32 = @as(i32, @intCast(double_x)) - @as(i32, @intCast(radius));
+            const y: i32 = @as(i32, @intCast(double_y)) - @as(i32, @intCast(radius));
+            if (@max(@abs(x), @abs(y)) == radius) {
+                const i: i32 = x + ix;
+                const j: i32 = y + iy;
+                if (self.get_tile_at(i, j)) |tile_found| {
+                    tile_found.y = -5 * @as(f32, @floatFromInt(radius));
+                }
+            }
+        }
+    }
+}
+
+pub fn main() anyerror!void {
+    const flip = @import("builtin").target.os.tag != .emscripten;
+    var gpa: if (flip) std.heap.GeneralPurposeAllocator(.{ .enable_memory_limit = true }) else struct {} = .{};
+    if (flip) gpa.requested_memory_limit = 1_000_000;
+    const allocator: std.mem.Allocator = if (flip) gpa.allocator() else std.heap.c_allocator;
+    if (flip) setup_window() else rl.initWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "please work");
+    defer rl.closeWindow();
+
+    const zlib = std.compress.zlib;
+    const t = try std.fs.cwd().openFile("resources/test", .{});
+    const zlib_stream = zlib.decompressor(t.reader());
+    _ = zlib_stream;
+
+    const sheet = try rl.loadTexture("resources/spritesheet.png");
+    const file = try std.fs.cwd().openFile("resources/critters/aseprite files/critter_stag.aseprite", .{});
+    const ase = tatl.import(allocator, file.reader()) catch @panic("failed parsing aseprite file");
+    var anim = try animator.Animator(StagAnimationStates).load(ase, allocator);
+
+    rl.setTargetFPS(60);
+    var state = try State.init(allocator);
+    defer state.deinit(allocator);
+    file.close();
+    ase.free(allocator);
+
+    try state.stags.append(allocator, .{ .animator = &anim, .position = rl.Vector2.zero() });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 20, .y = 13 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 30, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 2, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 6, .y = 1 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 32 } });
+
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 22, .y = 13 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 33, .y = 23 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 4, .y = 25 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 8, .y = 3 } });
+    try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 24, .y = 32 } });
+
+    while (!rl.windowShouldClose()) {
+        const mouse_position = get_mouse_screen_position();
+
+        try state.update(8);
+
+        // ignoring temporary render display on wasm because it is broken
+        if (flip) state.scene.begin() else rl.beginDrawing();
+
+        rl.clearBackground(.dark_gray);
+        try state.draw_tiles(sheet);
+
+        var world_pos = mouse_position;
+        const half_screen = try std.math.divFloor(f32, RENDER_WIDTH, 2);
+        world_pos.x -= half_screen;
+        world_pos.y -= TOP_PADDING;
+
+        const grid_pos = try screen_to_grid(world_pos);
+
+        // temporary
+        for (&state.tilemap) |*tile| {
+            if (tile.y != 0) {
+                tile.y /= 1.1;
+
+                if (@abs(tile.y) < 0.5) {
+                    tile.y = 0;
+                }
+            }
+        }
+
+        const ix: i32 = @intFromFloat(grid_pos.x);
+        const iy: i32 = @intFromFloat(grid_pos.y);
+        if (state.get_tile_at(ix, iy)) |tile| {
+            if (rl.isKeyPressed(.q)) {
+                try state.ripples.append(state.allocator, .{ .x = ix, .y = iy, .radius = 4, .interval_frames = 6 });
+            }
+            if (rl.isKeyDown(.e)) {
+                tile.kind = .water;
+                tile.occupation = null;
+            }
+
+            tile.y = -4;
+        }
+
+        for (state.stags.items) |stag| {
+            stag.draw();
+        }
+
+        for (state.ripples.items, 0..) |*ripple, i| {
+            ripple.on_tile_fn = Ripple.offset_tile_and_change_tile_to_water;
+            ripple.update(&state);
+
+            if (ripple.radius == ripple.current_wave) {
+                // TODO
+                // this should instead iterate via idx to safely remove. but fix later
+                _ = state.ripples.swapRemove(i);
+            }
+        }
+
+        // ignoring temporary render display on wasm because it is broken
+        if (flip) {
+            draw_final_scene(state.scene);
+            state.scene.end();
+        } else rl.endDrawing();
+    }
 }
