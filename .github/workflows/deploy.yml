@@ -1,0 +1,42 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  build-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Install Zig 0.14.0
+      - name: Install Zig
+        uses: goto-bus-stop/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      # Install latest Emscripten
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v2
+        with:
+          version: latest
+
+      # Build your project
+      - name: Build
+        run: |
+          source $HOME/emsdk/emsdk_env.sh
+          zig build -Dtarget=wasm32-emscripten --sysroot $HOME/emsdk/upstream/emscripten -Doptimize=Debug
+
+      # Prepare deployment files
+      - name: Prepare Deployment
+        run: |
+          mkdir -p public
+          cp -r zig-out/htmlout/* public/
+
+      # Deploy to GitHub Pages
+      - name: Deploy
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./public
