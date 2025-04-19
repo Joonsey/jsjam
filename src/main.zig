@@ -21,6 +21,7 @@ const tile_type = enum(u8) {
     grass,
     rock,
     water = 10,
+    soil,
 };
 
 // what is on top of a tile
@@ -28,6 +29,7 @@ const tile_occupation = enum(u8) {
     generic_but_occupied = 0,
     bush,
     rock,
+    water_particle,
 };
 
 const Tile = struct {
@@ -36,7 +38,10 @@ const Tile = struct {
     occupation: ?tile_occupation = null,
 
     pub fn occupied(tile: Tile) bool {
-        return tile.kind == .water or tile.occupation != null;
+        return switch (tile.kind) {
+            .water, .path => true,
+            else => tile.occupation != null,
+        };
     }
 };
 
@@ -190,6 +195,11 @@ const Ripple = struct {
     pub fn offset_tile_and_change_tile_to_water(self: *Ripple, tile: *Tile) void {
         tile.y = self.strength;
         tile.kind = .water;
+    }
+
+    pub fn offset_tile_and_change_tile_to_path(self: *Ripple, tile: *Tile) void {
+        tile.y = self.strength;
+        tile.kind = .path;
     }
 
     pub fn offset_tile(self: *Ripple, tile: *Tile) void {
@@ -382,7 +392,9 @@ const State = struct {
             const r = try std.math.mod(u64, rand.next(), @intCast(sheet_rows));
 
             switch (tile.kind) {
-                .tundra, .path, .grass, .rock => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
+                .tundra, .rock, .soil => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
+                .grass => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * @mod(r, 3)), screen_pos),
+                .path => draw_tile(sheet, tile.kind, TILE_WIDTH * 0, screen_pos),
                 .water => {
                     const above_tile = self.get_tile_at(x, y + 1);
                     const below_tile = self.get_tile_at(x, y - 1);
@@ -411,6 +423,21 @@ const State = struct {
                             .{
                                 .x = @floatFromInt(TILE_WIDTH * source_r),
                                 .y = 3 * TILE_WIDTH,
+                                .width = TILE_WIDTH,
+                                .height = TILE_WIDTH,
+                            },
+                            screen_pos,
+                            .white,
+                        );
+                    },
+                    .water_particle => {
+                        const source_r: usize = @intCast(5 + @as(i32, @intCast(@mod(rand.next(), 3))));
+                        screen_pos.y -= @divTrunc(TILE_HEIGHT, 2);
+                        rl.drawTextureRec(
+                            sheet,
+                            .{
+                                .x = @floatFromInt(TILE_WIDTH * (source_r)),
+                                .y = 7 * TILE_WIDTH,
                                 .width = TILE_WIDTH,
                                 .height = TILE_WIDTH,
                             },
@@ -569,6 +596,10 @@ pub fn main() anyerror!void {
             }
             if (rl.isKeyDown(.e)) {
                 tile.kind = .water;
+                tile.occupation = .water_particle;
+            }
+            if (rl.isKeyDown(.r)) {
+                tile.kind = .path;
                 tile.occupation = null;
             }
 
@@ -580,7 +611,7 @@ pub fn main() anyerror!void {
         }
 
         for (state.ripples.items, 0..) |*ripple, i| {
-            ripple.on_tile_fn = Ripple.offset_tile_and_change_tile_to_water;
+            ripple.on_tile_fn = Ripple.offset_tile_and_change_tile_to_path;
             ripple.update(&state);
 
             if (ripple.radius == ripple.current_wave) {
