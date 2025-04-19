@@ -15,21 +15,113 @@ const TOP_PADDING: usize = 0;
 const TILE_WIDTH: usize = 32;
 const TILE_HEIGHT: usize = 16;
 
+const building_type = enum(u8) {
+    water_pump,
+    excavator,
+};
+
+const BuildingParameter = union(building_type) {
+    water_pump,
+    excavator: Direction,
+};
+
+const Building = struct {
+    kind: building_type = .water_pump,
+
+    pub fn draw(self: Building, position: rl.Vector2) void {
+        const screen_pos = project_to_screen(position.x, position.y);
+        switch (self.kind) {
+            .water_pump => rl.drawCircleV(screen_pos, 15, .blue),
+            .excavator => rl.drawCircleV(screen_pos, 15, .red),
+        }
+    }
+
+    pub fn water_pump_land(pod: *Pod, state: *State, _: ?BuildingParameter) void {
+        const ix: i32 = @intFromFloat(pod.position.x);
+        const iy: i32 = @intFromFloat(pod.position.y);
+        if (state.get_tile_at(ix, iy)) |tile| {
+            tile.occupation = .{ .building = .{ .kind = .water_pump } };
+            tile.kind = .water;
+
+            var ripple: Ripple = .{ .x = ix, .y = iy, .radius = 4, .interval_frames = 16 };
+            ripple.on_tile_fn = Ripple.offset_tile_and_change_random_to_rock;
+            state.ripples.append(state.allocator, ripple) catch std.log.err("failed to add ripple", .{});
+        }
+    }
+
+    pub fn excavator_land(pod: *Pod, state: *State, param: ?BuildingParameter) void {
+        const direction = param.?.excavator;
+        if (state.get_tile_at(@intFromFloat(pod.position.x), @intFromFloat(pod.position.y))) |tile| {
+            tile.occupation = .{ .building = .{ .kind = .excavator } };
+        }
+
+        for (0..10) |i| {
+            var dir_vector = direction.to_vec();
+            dir_vector = dir_vector.scale(@floatFromInt(i));
+            const tile_grid_position = pod.position.add(dir_vector);
+            if (state.get_tile_at(@intFromFloat(tile_grid_position.x), @intFromFloat(tile_grid_position.y))) |tile| {
+                if (!tile.occupied()) {
+                    tile.kind = .path;
+                }
+            }
+        }
+    }
+};
+
+const Pod = struct {
+    end_pos_grid: rl.Vector2,
+    position: rl.Vector2,
+
+    building_parameter: ?BuildingParameter = null,
+
+    should_cleanup: bool = false,
+    on_land_cb: *const fn (*Pod, *State, ?BuildingParameter) void,
+
+    pub fn init(end_pos_grid: rl.Vector2, start_position: rl.Vector2, building: BuildingParameter) Pod {
+        return .{
+            .end_pos_grid = end_pos_grid,
+            .position = start_position,
+            .on_land_cb = switch (building) {
+                .excavator => Building.excavator_land,
+                .water_pump => Building.water_pump_land,
+            },
+            .building_parameter = building,
+        };
+    }
+
+    pub fn update(self: *Pod, state: *State, dt: u16) void {
+        const target = self.end_pos_grid;
+        if (self.position.distance(target) < 0.1) {
+            self.position = target;
+            self.on_land_cb(self, state, self.building_parameter);
+            self.should_cleanup = true;
+        }
+
+        self.position = self.position.moveTowards(target, 12 * @as(f32, @floatFromInt(dt)) / 1000);
+    }
+
+    pub fn draw(self: *Pod) void {
+        const screen_pos = project_to_screen(self.position.x, self.position.y);
+        rl.drawCircleV(screen_pos, 12, .yellow);
+    }
+};
+
 const tile_type = enum(u8) {
     tundra = 0,
     path,
     grass,
-    rock,
+    rock = 5,
     water = 10,
     soil,
 };
 
 // what is on top of a tile
-const tile_occupation = enum(u8) {
+const tile_occupation = union(enum(u8)) {
     generic_but_occupied = 0,
     bush,
     rock,
     water_particle,
+    building: Building,
 };
 
 const Tile = struct {
@@ -45,13 +137,13 @@ const Tile = struct {
     }
 };
 
-const Direction = enum {
+const Direction = enum(u6) {
     SW,
     NW,
     SE,
     NE,
 
-    fn from_direction(dx: f32, dy: f32) Direction {
+    pub fn from_direction(dx: f32, dy: f32) Direction {
         if (dx > 0) {
             return .SE;
         } else if (dx < 0) {
@@ -61,6 +153,15 @@ const Direction = enum {
         } else {
             return .SW;
         }
+    }
+
+    pub fn to_vec(self: Direction) rl.Vector2 {
+        return switch (self) {
+            .SW => rl.Vector2{ .x = 0, .y = 1 },
+            .NW => rl.Vector2{ .x = -1, .y = 0 },
+            .SE => rl.Vector2{ .x = 1, .y = 0 },
+            .NE => rl.Vector2{ .x = 0, .y = -1 },
+        };
     }
 };
 
@@ -202,6 +303,14 @@ const Ripple = struct {
         tile.kind = .path;
     }
 
+    pub fn offset_tile_and_change_random_to_rock(self: *Ripple, tile: *Tile) void {
+        tile.y = self.strength;
+        if (std.crypto.random.float(f32) >= 0.88) {
+            tile.kind = .rock;
+            if (std.crypto.random.float(f32) >= 0.5) tile.occupation = .rock;
+        }
+    }
+
     pub fn offset_tile(self: *Ripple, tile: *Tile) void {
         tile.y = self.strength;
     }
@@ -221,6 +330,8 @@ const State = struct {
     allocator: std.mem.Allocator,
     stags: std.ArrayListUnmanaged(Stag),
     ripples: std.ArrayListUnmanaged(Ripple),
+    pods: std.ArrayListUnmanaged(Pod),
+    ghost_building: ?BuildingParameter = null,
 
     pub fn init(allocator: std.mem.Allocator) !State {
         const collisions = try allocator.alloc([]bool, GRID_SIZE);
@@ -245,6 +356,7 @@ const State = struct {
             .allocator = allocator,
             .stags = .{},
             .ripples = .{},
+            .pods = .{},
         };
     }
 
@@ -272,81 +384,54 @@ const State = struct {
         return &self.tilemap[idx];
     }
 
+    fn for_adjecent_tiles(self: *State, tile: *Tile, x: i32, y: i32, do_func_cb: fn (*Tile, *Tile) bool) void {
+        if (self.get_tile_at(x, y + 1)) |above| {
+            if (do_func_cb(tile, above)) return;
+        }
+        if (self.get_tile_at(x, y - 1)) |below| {
+            if (do_func_cb(tile, below)) return;
+        }
+        if (self.get_tile_at(x - 1, y)) |left| {
+            if (do_func_cb(tile, left)) return;
+        }
+        if (self.get_tile_at(x + 1, y)) |right| {
+            if (do_func_cb(tile, right)) return;
+        }
+    }
+
+    fn convert_tundra_to_water(self: *Tile, other: *Tile) bool {
+        // these are on purpose independent
+        const uptick = std.crypto.random.float(f32) > 0.94;
+        const crit = std.crypto.random.float(f32) > 0.98;
+        if (other.kind == .water and uptick) {
+            self.kind = .grass;
+            if (crit) {
+                self.occupation = .bush;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    fn convert_path_to_water(self: *Tile, other: *Tile) bool {
+        const uptick = std.crypto.random.float(f32) > 0.96;
+        if (other.kind == .water and uptick) {
+            self.kind = .water;
+            return true;
+        }
+
+        return false;
+    }
+
     pub fn update(self: *State, dt: u16) !void {
         for (&self.tilemap, 0..) |*tile, i| {
             const x: i32 = @intCast(try std.math.mod(usize, i, GRID_SIZE));
             const y: i32 = @intCast(try std.math.divFloor(usize, i, GRID_SIZE));
 
             switch (tile.kind) {
-                .tundra => {
-                    // these are on purpose independent
-                    const uptick = std.crypto.random.float(f32) > 0.94;
-                    const crit = std.crypto.random.float(f32) > 0.98;
-                    if (self.get_tile_at(x, y + 1)) |above| {
-                        if (above.kind == .water and uptick) {
-                            tile.kind = .grass;
-                            if (crit) {
-                                tile.occupation = .bush;
-                            }
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x, y - 1)) |below| {
-                        if (below.kind == .water and uptick) {
-                            tile.kind = .grass;
-                            if (crit) {
-                                tile.occupation = .bush;
-                            }
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x - 1, y)) |left| {
-                        if (left.kind == .water and uptick) {
-                            tile.kind = .grass;
-                            if (crit) {
-                                tile.occupation = .bush;
-                            }
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x + 1, y)) |right| {
-                        if (right.kind == .water and uptick) {
-                            tile.kind = .grass;
-                            if (crit) {
-                                tile.occupation = .bush;
-                            }
-                            continue;
-                        }
-                    }
-                },
-                .path => {
-                    // these are on purpose independent
-                    const uptick = std.crypto.random.float(f32) > 0.96;
-                    if (self.get_tile_at(x, y + 1)) |above| {
-                        if (above.kind == .water and uptick) {
-                            tile.kind = .water;
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x, y - 1)) |below| {
-                        if (below.kind == .water and uptick) {
-                            tile.kind = .water;
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x - 1, y)) |left| {
-                        if (left.kind == .water and uptick) {
-                            tile.kind = .water;
-                            continue;
-                        }
-                    }
-                    if (self.get_tile_at(x + 1, y)) |right| {
-                        if (right.kind == .water and uptick) {
-                            tile.kind = .water;
-                            continue;
-                        }
-                    }
-                },
+                .tundra => for_adjecent_tiles(self, tile, x, y, convert_tundra_to_water),
+                .path => for_adjecent_tiles(self, tile, x, y, convert_path_to_water),
                 else => {},
             }
         }
@@ -363,6 +448,10 @@ const State = struct {
     }
 
     fn draw_tile(sheet: rl.Texture, kind: tile_type, source_x: f32, screen_pos: rl.Vector2) void {
+        draw_tile_color(sheet, kind, source_x, screen_pos, .white);
+    }
+
+    fn draw_tile_color(sheet: rl.Texture, kind: tile_type, source_x: f32, screen_pos: rl.Vector2, color: rl.Color) void {
         rl.drawTextureRec(
             sheet,
             .{
@@ -372,8 +461,36 @@ const State = struct {
                 .height = TILE_WIDTH,
             },
             screen_pos,
-            .white,
+            color,
         );
+    }
+
+    fn draw_ghost(self: *State, grid_pos: rl.Vector2, sheet: rl.Texture) void {
+        // i don't really like this. but is safer
+        // ideally we should ensure that we don't try to draw ghost every without a ghost building
+        if (self.ghost_building) |building| {
+            const screen_pos = project_to_screen(grid_pos.x, grid_pos.y);
+
+            switch (building) {
+                .excavator => |direction| {
+                    rl.drawCircleV(screen_pos, 15, .red);
+                    for (1..10) |i| {
+                        var dir_vector = direction.to_vec();
+                        dir_vector = dir_vector.scale(@floatFromInt(i));
+                        // TODO
+                        // some bug with drawing tiles at x + 1. This is shown also when we try to interact with the tiles at max X.
+                        // i believe this causes this artifact where have to off by one when drawing these ghost blocks
+                        const tile_grid_position_sub_one = grid_pos.subtract(.{ .x = 1, .y = 0 });
+                        const tile_grid_position = tile_grid_position_sub_one.add(dir_vector);
+
+                        draw_tile_color(sheet, .path, 0, project_to_screen(tile_grid_position.x, tile_grid_position.y), .{ .a = 100, .r = 0, .g = 128, .b = 0 });
+                    }
+                },
+                .water_pump => {
+                    rl.drawCircleV(screen_pos, 15, .blue);
+                },
+            }
+        }
     }
 
     pub fn draw_tiles(self: *State, sheet: rl.Texture) !void {
@@ -392,9 +509,10 @@ const State = struct {
             const r = try std.math.mod(u64, rand.next(), @intCast(sheet_rows));
 
             switch (tile.kind) {
-                .tundra, .rock, .soil => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
+                .tundra, .soil => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
                 .grass => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * @mod(r, 3)), screen_pos),
                 .path => draw_tile(sheet, tile.kind, TILE_WIDTH * 0, screen_pos),
+                .rock => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * (6 + @mod(r, 3))), screen_pos),
                 .water => {
                     const above_tile = self.get_tile_at(x, y + 1);
                     const below_tile = self.get_tile_at(x, y - 1);
@@ -445,10 +563,35 @@ const State = struct {
                             .white,
                         );
                     },
+                    .rock => {
+                        const source_r: usize = @intCast(9 + @as(i32, @intCast(@mod(rand.next(), 2))));
+                        screen_pos.y -= @divTrunc(TILE_HEIGHT, 2);
+                        rl.drawTextureRec(
+                            sheet,
+                            .{
+                                .x = @floatFromInt(TILE_WIDTH * (source_r)),
+                                .y = 5 * TILE_WIDTH,
+                                .width = TILE_WIDTH,
+                                .height = TILE_WIDTH,
+                            },
+                            screen_pos,
+                            .white,
+                        );
+                    },
                     .generic_but_occupied => {},
-                    else => {},
+                    .building => |building| building.draw(.{ .x = @floatFromInt(x), .y = @floatFromInt(y) }),
                 }
             }
+        }
+    }
+
+    pub fn summon_building(self: *State, grid_pos: rl.Vector2, building: BuildingParameter) void {
+        const pod_spawn = screen_to_grid(rl.Vector2.zero()) catch {
+            std.log.err("failed to get grid position from screen position", .{});
+            return;
+        };
+        if (self.get_tile_at(@intFromFloat(grid_pos.x), @intFromFloat(grid_pos.y))) |_| {
+            self.pods.append(self.allocator, Pod.init(grid_pos, pod_spawn, building)) catch std.log.err("failed to add pod", .{});
         }
     }
 
@@ -559,6 +702,8 @@ pub fn main() anyerror!void {
     try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 8, .y = 3 } });
     try state.stags.append(allocator, .{ .animator = &anim, .position = .{ .x = 24, .y = 32 } });
 
+    state.ghost_building = .{ .excavator = .SW };
+
     while (!rl.windowShouldClose()) {
         const mouse_position = get_mouse_screen_position();
 
@@ -591,27 +736,40 @@ pub fn main() anyerror!void {
         const ix: i32 = @intFromFloat(grid_pos.x);
         const iy: i32 = @intFromFloat(grid_pos.y);
         if (state.get_tile_at(ix, iy)) |tile| {
-            if (rl.isKeyPressed(.q)) {
-                try state.ripples.append(state.allocator, .{ .x = ix, .y = iy, .radius = 4, .interval_frames = 6 });
+            if (rl.isKeyPressed(.e)) {
+                if (state.ghost_building) |parameter| state.summon_building(grid_pos, parameter);
             }
-            if (rl.isKeyDown(.e)) {
-                tile.kind = .water;
-                tile.occupation = .water_particle;
+            if (rl.isKeyPressed(.r)) {
+                if (state.ghost_building) |parameter| {
+                    state.ghost_building = switch (parameter) {
+                        .excavator => |excavator| .{ .excavator = @as(Direction, @enumFromInt(@mod(@intFromEnum(excavator) + 1, 4))) },
+                        .water_pump => parameter,
+                    };
+                }
             }
-            if (rl.isKeyDown(.r)) {
-                tile.kind = .path;
-                tile.occupation = null;
+            if (rl.isKeyPressed(.f)) {
+                state.summon_building(grid_pos, .water_pump);
             }
 
             tile.y = -4;
+        }
+
+        if (state.ghost_building) |_| {
+            state.draw_ghost(.{ .x = @floatFromInt(ix), .y = @floatFromInt(iy) }, sheet);
         }
 
         for (state.stags.items) |stag| {
             stag.draw();
         }
 
+        for (state.pods.items, 0..) |*pod, i| {
+            pod.update(&state, 16);
+            pod.draw();
+
+            if (pod.should_cleanup) _ = state.pods.swapRemove(i);
+        }
+
         for (state.ripples.items, 0..) |*ripple, i| {
-            ripple.on_tile_fn = Ripple.offset_tile_and_change_tile_to_path;
             ripple.update(&state);
 
             if (ripple.radius == ripple.current_wave) {
