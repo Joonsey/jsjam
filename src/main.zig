@@ -736,9 +736,24 @@ pub fn main() anyerror!void {
         const ix: i32 = @intFromFloat(grid_pos.x);
         const iy: i32 = @intFromFloat(grid_pos.y);
         if (state.get_tile_at(ix, iy)) |tile| {
+            tile.y = -4;
+
             if (rl.isKeyPressed(.e)) {
                 if (state.ghost_building) |parameter| state.summon_building(grid_pos, parameter);
             }
+
+            if (rl.isKeyPressed(.one)) {
+                state.ghost_building = .{ .excavator = .NE };
+            }
+
+            if (rl.isKeyPressed(.two)) {
+                state.ghost_building = .water_pump;
+            }
+
+            if (rl.isKeyPressed(.q)) {
+                state.ghost_building = null;
+            }
+
             if (rl.isKeyPressed(.r)) {
                 if (state.ghost_building) |parameter| {
                     state.ghost_building = switch (parameter) {
@@ -747,11 +762,6 @@ pub fn main() anyerror!void {
                     };
                 }
             }
-            if (rl.isKeyPressed(.f)) {
-                state.summon_building(grid_pos, .water_pump);
-            }
-
-            tile.y = -4;
         }
 
         if (state.ghost_building) |_| {
