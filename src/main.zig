@@ -18,11 +18,13 @@ const TILE_HEIGHT: usize = 16;
 const building_type = enum(u8) {
     water_pump,
     excavator,
+    fertilizer,
 };
 
 const BuildingParameter = union(building_type) {
     water_pump,
     excavator: Direction,
+    fertilizer,
 };
 
 const Building = struct {
@@ -33,6 +35,7 @@ const Building = struct {
         switch (self.kind) {
             .water_pump => rl.drawCircleV(screen_pos, 15, .blue),
             .excavator => rl.drawCircleV(screen_pos, 15, .red),
+            .fertilizer => rl.drawCircleV(screen_pos, 15, .green),
         }
     }
 
@@ -55,15 +58,28 @@ const Building = struct {
             tile.occupation = .{ .building = .{ .kind = .excavator } };
         }
 
-        for (0..10) |i| {
+        for (1..10) |i| {
             var dir_vector = direction.to_vec();
             dir_vector = dir_vector.scale(@floatFromInt(i));
             const tile_grid_position = pod.position.add(dir_vector);
             if (state.get_tile_at(@intFromFloat(tile_grid_position.x), @intFromFloat(tile_grid_position.y))) |tile| {
                 if (!tile.occupied()) {
                     tile.kind = .path;
-                }
+                } else return;
             }
+        }
+    }
+
+    pub fn fertilizer_land(pod: *Pod, state: *State, _: ?BuildingParameter) void {
+        const ix: i32 = @intFromFloat(pod.position.x);
+        const iy: i32 = @intFromFloat(pod.position.y);
+        if (state.get_tile_at(ix, iy)) |tile| {
+            tile.occupation = .{ .building = .{ .kind = .fertilizer } };
+            tile.kind = .soil;
+
+            var ripple: Ripple = .{ .x = ix, .y = iy, .radius = 6, .interval_frames = 8 };
+            ripple.on_tile_fn = Ripple.offset_tile_and_change_tile_to_soil;
+            state.ripples.append(state.allocator, ripple) catch std.log.err("failed to add ripple", .{});
         }
     }
 };
@@ -84,6 +100,7 @@ const Pod = struct {
             .on_land_cb = switch (building) {
                 .excavator => Building.excavator_land,
                 .water_pump => Building.water_pump_land,
+                .fertilizer => Building.fertilizer_land,
             },
             .building_parameter = building,
         };
@@ -131,8 +148,11 @@ const Tile = struct {
 
     pub fn occupied(tile: Tile) bool {
         return switch (tile.kind) {
-            .water, .path => true,
-            else => tile.occupation != null,
+            .water, .path, .rock => true,
+            else => if (tile.occupation) |occupation| switch (occupation) {
+                .building => true,
+                else => false,
+            } else false,
         };
     }
 };
@@ -295,12 +315,18 @@ const Ripple = struct {
 
     pub fn offset_tile_and_change_tile_to_water(self: *Ripple, tile: *Tile) void {
         tile.y = self.strength;
-        tile.kind = .water;
+        if (!tile.occupied()) tile.kind = .water;
     }
 
     pub fn offset_tile_and_change_tile_to_path(self: *Ripple, tile: *Tile) void {
         tile.y = self.strength;
-        tile.kind = .path;
+        if (!tile.occupied()) tile.kind = .path;
+    }
+
+    pub fn offset_tile_and_change_tile_to_soil(self: *Ripple, tile: *Tile) void {
+        tile.y = self.strength;
+
+        if (!tile.occupied()) tile.kind = .soil;
     }
 
     pub fn offset_tile_and_change_random_to_rock(self: *Ripple, tile: *Tile) void {
@@ -399,7 +425,7 @@ const State = struct {
         }
     }
 
-    fn convert_tundra_to_water(self: *Tile, other: *Tile) bool {
+    fn convert_tundra_to_grass(self: *Tile, other: *Tile) bool {
         // these are on purpose independent
         const uptick = std.crypto.random.float(f32) > 0.94;
         const crit = std.crypto.random.float(f32) > 0.98;
@@ -424,14 +450,25 @@ const State = struct {
         return false;
     }
 
+    fn convert_soil_to_grass(self: *Tile, other: *Tile) bool {
+        const uptick = std.crypto.random.float(f32) > 0.99;
+        if ((other.kind == .grass or other.kind == .water) and uptick) {
+            self.kind = .grass;
+            return true;
+        }
+
+        return false;
+    }
+
     pub fn update(self: *State, dt: u16) !void {
         for (&self.tilemap, 0..) |*tile, i| {
             const x: i32 = @intCast(try std.math.mod(usize, i, GRID_SIZE));
             const y: i32 = @intCast(try std.math.divFloor(usize, i, GRID_SIZE));
 
             switch (tile.kind) {
-                .tundra => for_adjecent_tiles(self, tile, x, y, convert_tundra_to_water),
+                .tundra => for_adjecent_tiles(self, tile, x, y, convert_tundra_to_grass),
                 .path => for_adjecent_tiles(self, tile, x, y, convert_path_to_water),
+                .soil => for_adjecent_tiles(self, tile, x, y, convert_soil_to_grass),
                 else => {},
             }
         }
@@ -486,9 +523,8 @@ const State = struct {
                         draw_tile_color(sheet, .path, 0, project_to_screen(tile_grid_position.x, tile_grid_position.y), .{ .a = 100, .r = 0, .g = 128, .b = 0 });
                     }
                 },
-                .water_pump => {
-                    rl.drawCircleV(screen_pos, 15, .blue);
-                },
+                .water_pump => rl.drawCircleV(screen_pos, 15, .blue),
+                .fertilizer => rl.drawCircleV(screen_pos, 15, .green),
             }
         }
     }
@@ -509,10 +545,11 @@ const State = struct {
             const r = try std.math.mod(u64, rand.next(), @intCast(sheet_rows));
 
             switch (tile.kind) {
-                .tundra, .soil => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
+                .tundra => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * r), screen_pos),
                 .grass => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * @mod(r, 3)), screen_pos),
                 .path => draw_tile(sheet, tile.kind, TILE_WIDTH * 0, screen_pos),
                 .rock => draw_tile(sheet, tile.kind, @floatFromInt(TILE_WIDTH * (6 + @mod(r, 3))), screen_pos),
+                .soil => draw_tile(sheet, .path, @floatFromInt(TILE_WIDTH * (8 + @mod(r, 2))), screen_pos), // TODO this should not be .path hardcoded
                 .water => {
                     const above_tile = self.get_tile_at(x, y + 1);
                     const below_tile = self.get_tile_at(x, y - 1);
@@ -749,6 +786,9 @@ pub fn main() anyerror!void {
             if (rl.isKeyPressed(.two)) {
                 state.ghost_building = .water_pump;
             }
+            if (rl.isKeyPressed(.three)) {
+                state.ghost_building = .fertilizer;
+            }
 
             if (rl.isKeyPressed(.q)) {
                 state.ghost_building = null;
@@ -759,6 +799,7 @@ pub fn main() anyerror!void {
                     state.ghost_building = switch (parameter) {
                         .excavator => |excavator| .{ .excavator = @as(Direction, @enumFromInt(@mod(@intFromEnum(excavator) + 1, 4))) },
                         .water_pump => parameter,
+                        .fertilizer => parameter,
                     };
                 }
             }
