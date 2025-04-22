@@ -402,6 +402,11 @@ const State = struct {
         }
     }
 
+    pub fn draw_ui(self: *State) void {
+        _ = self;
+        return;
+    }
+
     pub fn get_tile_at(self: *State, x: i32, y: i32) ?*Tile {
         if (x < 0 or x > GRID_SIZE) return null;
         if (y < 0 or y > GRID_SIZE) return null;
@@ -524,7 +529,20 @@ const State = struct {
                     }
                 },
                 .water_pump => rl.drawCircleV(screen_pos, 15, .blue),
-                .fertilizer => rl.drawCircleV(screen_pos, 15, .green),
+                .fertilizer => {
+                    const radius = 5;
+                    for (0..(radius * 2) + 1) |i| {
+                        for (0..(radius * 2) + 1) |j| {
+                            // TODO
+                            // some bug with drawing tiles at x + 1. This is shown also when we try to interact with the tiles at max X.
+                            // i believe this causes this artifact where have to off by one when drawing these ghost blocks
+                            const tile_grid_position_sub_one = grid_pos.subtract(.{ .x = 1, .y = 0 });
+                            const tile_screen_pos = project_to_screen(tile_grid_position_sub_one.x - (@as(f32, @floatFromInt(radius))) + @as(f32, @floatFromInt(i)), tile_grid_position_sub_one.y - (@as(f32, @floatFromInt(radius))) + @as(f32, @floatFromInt(j)));
+                            draw_tile_color(sheet, .soil, @floatFromInt(TILE_WIDTH * 8), tile_screen_pos, .{ .a = 50, .r = 0, .g = 128, .b = 0 });
+                        }
+                    }
+                    rl.drawCircleV(screen_pos, 15, .green);
+                },
             }
         }
     }
